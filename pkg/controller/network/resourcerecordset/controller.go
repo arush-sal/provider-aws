@@ -2,7 +2,6 @@ package resourcerecordset
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/route53"
@@ -25,8 +24,10 @@ import (
 
 const (
 	errUnexpectedObject = "The managed resource is not an ResourceRecordSet resource"
-	errChange           = "failed to change the ResourceRecordSet resource"
 	errList             = "failed to list the ResourceRecordSet resource"
+	errCreate           = "failed to create the ResourceRecordSet resource"
+	errUpdate           = "failed to update the ResourceRecordSet resource"
+	errDelete           = "failed to delete the ResourceRecordSet resource"
 )
 
 // SetupResourceRecordSet adds a controller that reconciles ResourceRecordSets.
@@ -74,7 +75,7 @@ type external struct {
 
 func (e *external) Observe(ctx context.Context, mgd resource.Managed) (managed.ExternalObservation, error) {
 	cr, ok := mgd.(*v1alpha3.ResourceRecordSet)
-	fmt.Printf("\n\nIn Observe...\n\n")
+
 	if !ok {
 		return managed.ExternalObservation{}, errors.New(errUnexpectedObject)
 	}
@@ -85,7 +86,6 @@ func (e *external) Observe(ctx context.Context, mgd resource.Managed) (managed.E
 	}
 	if err != nil {
 		// Either there is err and retry. Or Resource does not exist.
-		// fmt.Println("ResourceRecordSet Does not Exists")
 		return managed.ExternalObservation{
 			ResourceExists:    false,
 			ConnectionDetails: managed.ConnectionDetails{},
@@ -93,6 +93,8 @@ func (e *external) Observe(ctx context.Context, mgd resource.Managed) (managed.E
 	}
 
 	cr.Status.AtProvider = resourcerecordset.GenerateObservation(rrset)
+
+	cr.Status.SetConditions(runtimev1alpha1.Available())
 
 	upToDate, err := resourcerecordset.IsUpToDate(cr.Spec.ForProvider, rrset)
 	if err != nil {
@@ -107,9 +109,6 @@ func (e *external) Observe(ctx context.Context, mgd resource.Managed) (managed.E
 }
 
 func (e *external) Create(ctx context.Context, mgd resource.Managed) (managed.ExternalCreation, error) {
-
-	fmt.Printf("\n\nIn Create...\n\n")
-
 	cr, ok := mgd.(*v1alpha3.ResourceRecordSet)
 	if !ok {
 		return managed.ExternalCreation{}, errors.New(errUnexpectedObject)
@@ -121,16 +120,18 @@ func (e *external) Create(ctx context.Context, mgd resource.Managed) (managed.Ex
 	_, err := e.client.ChangeResourceRecordSetsRequest(input).Send(ctx)
 
 	if err != nil {
-		return managed.ExternalCreation{}, errors.Wrap(err, errChange)
+		return managed.ExternalCreation{}, errors.Wrap(err, errCreate)
 	}
-	cr.Status.SetConditions(runtimev1alpha1.Creating())
 
-	return managed.ExternalCreation{}, errors.Wrap(nil, errChange)
+	// One time set of up AtProvider manually.
+	// Because AWS ChangeResourceRecordSetOutput doesn't provide enough params, we are forced
+	// to use input as source of truth.
+	resourcerecordset.UpdateAtProvider(&cr.Status.AtProvider, *input.ChangeBatch.Changes[0].ResourceRecordSet)
+
+	return managed.ExternalCreation{}, errors.Wrap(nil, errCreate)
 }
 
 func (e *external) Update(ctx context.Context, mgd resource.Managed) (managed.ExternalUpdate, error) {
-	fmt.Printf("\n\nIn Update...\n\n")
-
 	cr, ok := mgd.(*v1alpha3.ResourceRecordSet)
 	if !ok {
 		return managed.ExternalUpdate{}, errors.New(errUnexpectedObject)
@@ -139,14 +140,13 @@ func (e *external) Update(ctx context.Context, mgd resource.Managed) (managed.Ex
 	_, err := e.client.ChangeResourceRecordSetsRequest(input).Send(ctx)
 
 	if err != nil {
-		return managed.ExternalUpdate{}, errors.Wrap(err, errChange)
+		return managed.ExternalUpdate{}, errors.Wrap(err, errUpdate)
 	}
 
-	return managed.ExternalUpdate{}, errors.Wrap(nil, errChange)
+	return managed.ExternalUpdate{}, errors.Wrap(nil, errUpdate)
 }
 
 func (e *external) Delete(ctx context.Context, mgd resource.Managed) error {
-	fmt.Printf("\n\nIn Delete...\n\n")
 	cr, ok := mgd.(*v1alpha3.ResourceRecordSet)
 	if !ok {
 		return errors.New(errUnexpectedObject)
@@ -155,7 +155,17 @@ func (e *external) Delete(ctx context.Context, mgd resource.Managed) error {
 	cr.Status.SetConditions(runtimev1alpha1.Deleting())
 
 	input := resourcerecordset.GenerateChangeResourceRecordSetsInput(&cr.Spec.ForProvider, route53.ChangeActionDelete)
-	e.client.ChangeResourceRecordSetsRequest(input).Send(ctx)
 
-	return errors.Wrap(nil, errChange)
+	_, err := e.client.ChangeResourceRecordSetsRequest(input).Send(ctx)
+
+	// There is no way to confirm 404 (from response) when deleting a recordset
+	// which isn't present using ChangeResourceRecordSetRequest
+	//
+	// For any 404 when deleting, error code returned is nil.
+	//So we can safely ignore this and catch any other error.
+	if err != nil {
+		return errors.Wrap(err, errDelete)
+	}
+
+	return errors.Wrap(nil, errDelete)
 }

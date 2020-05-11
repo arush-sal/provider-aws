@@ -63,7 +63,7 @@ const (
 // +kubebuilder:object:root=true
 
 // ResourceRecordSet is a managed resource that represents an AWS Route53 Resource Record.
-// +kubebuilder:printcolumn:name="ARN",type="string",JSONPath=".status.atProvider.arn"
+// +kubebuilder:printcolumn:name="TYPE",type="string",JSONPath=".status.atProvider.Type"
 // +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="SYNCED",type="string",JSONPath=".status.conditions[?(@.type=='Synced')].status"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
