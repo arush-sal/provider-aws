@@ -9,7 +9,7 @@ metadata:
   name: resourcerecordsets.network.aws.crossplane.io
 spec:
   additionalPrinterColumns:
-  - JSONPath: .status.atProvider.Type
+  - JSONPath: .spec.forProvider.type
     name: TYPE
     type: string
   - JSONPath: .status.conditions[?(@.type=='Ready')].status
@@ -154,7 +154,7 @@ spec:
                     CHANGE, or DELETE the Resource Record.
                   type: string
                 zoneIdRef:
-                  description: ZoneIDRef references a VPC to and retrieves its vpcId
+                  description: ZoneIDRef references a Zone to retrieves its ZoneId
                   properties:
                     name:
                       description: Name of the referenced object.
@@ -163,8 +163,8 @@ spec:
                   - name
                   type: object
                 zoneIdSelector:
-                  description: ZoneIDSelector selects a reference to a Zone to and
-                    retrieves its ZoneID
+                  description: ZoneIDSelector selects a reference to a Zone to retrieves
+                    its ZoneID
                   properties:
                     matchControllerRef:
                       description: MatchControllerRef ensures an object with the same
@@ -259,43 +259,6 @@ spec:
           description: ResourceRecordSetStatus represents the observed state of a
             ResourceRecordSet.
           properties:
-            atProvider:
-              description: ResourceRecordSetObservation keeps the state for the external
-                resource.
-              properties:
-                Name:
-                  description: Name of the record that you want to create, update,
-                    or delete.
-                  type: string
-                ResourceRecords:
-                  description: ResourceRecord holds the information about the resource
-                    records to act upon.
-                  items:
-                    description: ResourceRecord holds the DNS value to be used for
-                      the record.
-                    properties:
-                      Value:
-                        description: The current or new DNS record value, not to exceed
-                          4,000 characters. In the case of a DELETE action, if the
-                          current value does not match the actual value, an error
-                          is returned.
-                        type: string
-                    required:
-                    - Value
-                    type: object
-                  type: array
-                TTL:
-                  description: The resource record cache time to live (TTL), in seconds.
-                  format: int64
-                  type: integer
-                Type:
-                  type: string
-              required:
-              - Name
-              - ResourceRecords
-              - TTL
-              - Type
-              type: object
             bindingPhase:
               description: Phase represents the binding phase of a managed resource
                 or claim. Unbindable resources cannot be bound, typically because
@@ -341,8 +304,6 @@ spec:
                 - type
                 type: object
               type: array
-          required:
-          - atProvider
           type: object
       required:
       - spec

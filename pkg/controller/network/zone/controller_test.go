@@ -1,3 +1,19 @@
+/*
+Copyright 2019 The Crossplane Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package zone
 
 import (
@@ -8,15 +24,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/awserr"
 	awsroute53 "github.com/aws/aws-sdk-go-v2/service/route53"
+	"github.com/google/go-cmp/cmp"
+	"github.com/pkg/errors"
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	runtimev1alpha1 "github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
 	"github.com/crossplane/crossplane-runtime/pkg/meta"
 	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
 	"github.com/crossplane/crossplane-runtime/pkg/resource"
 	"github.com/crossplane/crossplane-runtime/pkg/test"
-	"github.com/google/go-cmp/cmp"
-	"github.com/pkg/errors"
-	corev1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/crossplane/provider-aws/apis/network/v1alpha3"
 	"github.com/crossplane/provider-aws/pkg/clients/zone"
@@ -29,15 +46,13 @@ const (
 )
 
 var (
-	unexpecedItem resource.Managed
-	zoneName            = "crossplane.io"
-	uuid                = "a96abeca-8da3-40fc-a2d5-08d72084eb65"
-	errBoom             = errors.New("Some random error")
-	id                  = "/hostedzone/XXXXXXXXXXXXXXXXXXX"
-	location            = "https://route53.amazonaws.com/2013-04-01/hostedzone/XXXXXXXXXXXXXXXXXXX"
-	rrCount       int64 = 2
-	c                   = new(string)
-	b                   = new(bool)
+	unexpectedItem resource.Managed
+	uuid                 = "a96abeca-8da3-40fc-a2d5-08d72084eb65"
+	errBoom              = errors.New("Some random error")
+	id                   = "/hostedzone/XXXXXXXXXXXXXXXXXXX"
+	rrCount        int64 = 2
+	c                    = new(string)
+	b                    = new(bool)
 )
 
 type zoneModifier func(*v1alpha3.Zone)
@@ -56,10 +71,9 @@ func withConditions(c ...runtimev1alpha1.Condition) zoneModifier {
 	return func(r *v1alpha3.Zone) { r.Status.ConditionedStatus.Conditions = c }
 }
 
-func withStatus(id, location string, rr int64) zoneModifier {
+func withStatus(id string, rr int64) zoneModifier {
 	return func(r *v1alpha3.Zone) {
 		r.Status.AtProvider.ID = id
-		r.Status.AtProvider.Location = location
 		r.Status.AtProvider.ResourceRecordCount = rr
 	}
 }
@@ -75,10 +89,9 @@ func zoneTester(m ...zoneModifier) *v1alpha3.Zone {
 				ProviderReference: &corev1.ObjectReference{Name: providerName},
 			},
 			ForProvider: v1alpha3.ZoneParameters{
-				Comment:         c,
-				CallerReference: &uuid,
-				Name:            &zoneName,
-				PrivateZone:     b,
+				Comment:     c,
+				Name:        &id,
+				PrivateZone: b,
 			},
 		},
 	}
@@ -154,7 +167,7 @@ func TestObserve(t *testing.T) {
 					MockStatusUpdate: test.NewMockStatusUpdateFn(nil),
 				},
 				route53: &fake.MockZoneClient{
-					MockGetZoneRequest: func(input *string) awsroute53.GetHostedZoneRequest {
+					MockGetZoneRequest: func(input string) awsroute53.GetHostedZoneRequest {
 						return awsroute53.GetHostedZoneRequest{
 							Request: &aws.Request{HTTPRequest: &http.Request{},
 								Data: &awsroute53.GetHostedZoneOutput{
@@ -174,13 +187,13 @@ func TestObserve(t *testing.T) {
 					},
 				},
 				cr: zoneTester(
-					withZoneName(&zoneName),
-					withStatus(id, location, rrCount)),
+					withZoneName(&id),
+					withStatus(id, rrCount)),
 			},
 			want: want{
 				cr: zoneTester(
-					withZoneName(&zoneName),
-					withStatus(id, location, rrCount),
+					withZoneName(&id),
+					withStatus(id, rrCount),
 					withConditions(runtimev1alpha1.Available())),
 				result: managed.ExternalObservation{
 					ResourceExists:    true,
@@ -191,17 +204,17 @@ func TestObserve(t *testing.T) {
 		},
 		"InValidInput": {
 			args: args{
-				cr: unexpecedItem,
+				cr: unexpectedItem,
 			},
 			want: want{
-				cr:  unexpecedItem,
+				cr:  unexpectedItem,
 				err: errors.New(errUnexpectedObject),
 			},
 		},
 		"ResourceDoesNotExist": {
 			args: args{
 				route53: &fake.MockZoneClient{
-					MockGetZoneRequest: func(input *string) awsroute53.GetHostedZoneRequest {
+					MockGetZoneRequest: func(input string) awsroute53.GetHostedZoneRequest {
 						return awsroute53.GetHostedZoneRequest{
 							Request: &aws.Request{HTTPRequest: &http.Request{}, Error: awserr.New(awsroute53.ErrCodeNoSuchHostedZone, "", nil)},
 						}
@@ -250,6 +263,9 @@ func TestCreate(t *testing.T) {
 	}{
 		"VaildInput": {
 			args: args{
+				kube: &test.MockClient{
+					MockStatusUpdate: test.NewMockStatusUpdateFn(nil),
+				},
 				route53: &fake.MockZoneClient{
 					MockCreateZoneRequest: func(cr *v1alpha3.Zone) awsroute53.CreateHostedZoneRequest {
 						return awsroute53.CreateHostedZoneRequest{
@@ -264,27 +280,26 @@ func TestCreate(t *testing.T) {
 											PrivateZone: b,
 										},
 									},
-									Location: &location,
 								},
 							},
 						}
 					},
 				},
-				cr: zoneTester(withZoneName(&zoneName)),
+				cr: zoneTester(withZoneName(&id)),
 			},
 			want: want{
 				cr: zoneTester(
-					withZoneName(&zoneName),
-					withStatus(id, location, rrCount),
+					withZoneName(&id),
+					withStatus(id, rrCount),
 					withConditions(runtimev1alpha1.Creating())),
 			},
 		},
 		"InValidInput": {
 			args: args{
-				cr: unexpecedItem,
+				cr: unexpectedItem,
 			},
 			want: want{
-				cr:  unexpecedItem,
+				cr:  unexpectedItem,
 				err: errors.New(errUnexpectedObject),
 			},
 		},
@@ -308,7 +323,7 @@ func TestCreate(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			e := &external{client: tc.route53}
+			e := &external{kube: test.NewMockClient(), client: tc.route53}
 			o, err := e.Create(context.Background(), tc.args.cr)
 
 			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
@@ -356,20 +371,20 @@ func TestUpdate(t *testing.T) {
 						}
 					},
 				},
-				cr: zoneTester(withZoneName(&zoneName),
+				cr: zoneTester(withZoneName(&id),
 					withComment("New Comment")),
 			},
 			want: want{
-				cr: zoneTester(withZoneName(&zoneName),
+				cr: zoneTester(withZoneName(&id),
 					withComment("New Comment")),
 			},
 		},
 		"InValidInput": {
 			args: args{
-				cr: unexpecedItem,
+				cr: unexpectedItem,
 			},
 			want: want{
-				cr:  unexpecedItem,
+				cr:  unexpectedItem,
 				err: errors.New(errUnexpectedObject),
 			},
 		},
@@ -413,19 +428,19 @@ func TestDelete(t *testing.T) {
 						}
 					},
 				},
-				cr: zoneTester(withZoneName(&zoneName)),
+				cr: zoneTester(withZoneName(&id)),
 			},
 			want: want{
-				cr: zoneTester(withZoneName(&zoneName),
+				cr: zoneTester(withZoneName(&id),
 					withConditions(runtimev1alpha1.Deleting())),
 			},
 		},
 		"InValidInput": {
 			args: args{
-				cr: unexpecedItem,
+				cr: unexpectedItem,
 			},
 			want: want{
-				cr:  unexpecedItem,
+				cr:  unexpectedItem,
 				err: errors.New(errUnexpectedObject),
 			},
 		},

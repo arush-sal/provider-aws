@@ -1,10 +1,26 @@
+/*
+Copyright 2019 The Crossplane Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package resourcerecordset
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/route53"
@@ -47,7 +63,7 @@ func GenerateChangeResourceRecordSetsInput(p *v1alpha3.ResourceRecordSetParamete
 		ttl = p.TTL
 	}
 
-	resourceRecords := make([]route53.ResourceRecord, 0)
+	resourceRecords := make([]route53.ResourceRecord, 0, len(p.Records))
 	for _, r := range p.Records {
 		record := r
 		resourceRecords = append(resourceRecords, route53.ResourceRecord{
@@ -55,48 +71,30 @@ func GenerateChangeResourceRecordSetsInput(p *v1alpha3.ResourceRecordSetParamete
 		})
 	}
 
-	resourceRecordSet := route53.ResourceRecordSet{
-		Name:            p.Name,
-		Type:            route53.RRType(aws.StringValue(p.Type)),
-		TTL:             ttl,
-		ResourceRecords: resourceRecords,
-	}
-	changeBatch := &route53.ChangeBatch{
-		Changes: []route53.Change{
-			{
-				Action:            action,
-				ResourceRecordSet: &resourceRecordSet,
+	return &route53.ChangeResourceRecordSetsInput{
+		HostedZoneId: p.ZoneID,
+		ChangeBatch: &route53.ChangeBatch{
+			Changes: []route53.Change{
+				{
+					Action: action,
+					ResourceRecordSet: &route53.ResourceRecordSet{
+						Name:            p.Name,
+						Type:            route53.RRType(aws.StringValue(p.Type)),
+						TTL:             ttl,
+						ResourceRecords: resourceRecords,
+					},
+				},
 			},
 		},
 	}
-	return &route53.ChangeResourceRecordSetsInput{
-		HostedZoneId: p.ZoneID,
-		ChangeBatch:  changeBatch,
-	}
-}
-
-// GenerateObservation is used to produce v1alpha3.ResourceRecordSetObservation from
-// route53.ResourceRecordSet
-func GenerateObservation(r route53.ResourceRecordSet) v1alpha3.ResourceRecordSetObservation {
-
-	rType := string(r.Type)
-	resourceRecords := make([]*v1alpha3.ResourceRecord, 0)
-	for _, item := range r.ResourceRecords {
-		resourceRecords = append(resourceRecords, &v1alpha3.ResourceRecord{Value: item.Value})
-	}
-
-	o := v1alpha3.ResourceRecordSetObservation{
-		Name:            r.Name,
-		Type:            &rType,
-		TTL:             r.TTL,
-		ResourceRecords: resourceRecords,
-	}
-
-	return o
 }
 
 // IsUpToDate checks if object is up to date
 func IsUpToDate(p v1alpha3.ResourceRecordSetParameters, rrset route53.ResourceRecordSet) (bool, error) {
+	// check for the root "." found in DNS entries and add if not found
+	if !strings.HasSuffix(*p.Name, ".") {
+		p.Name = aws.String(fmt.Sprintf("%s.", *p.Name))
+	}
 	patch, err := CreatePatch(&rrset, &p)
 	if err != nil {
 		return false, err
@@ -128,8 +126,7 @@ func LateInitialize(in *v1alpha3.ResourceRecordSetParameters, rrSet *route53.Res
 // CreatePatch creates a *v1beta1.ResourceRecordSetParameters that has only the changed
 // values between the target *v1beta1.ResourceRecordSetParameters and the current
 // *route53.ResourceRecordSet
-func CreatePatch(in *route53.ResourceRecordSet,
-	target *v1alpha3.ResourceRecordSetParameters) (*v1alpha3.ResourceRecordSetParameters, error) {
+func CreatePatch(in *route53.ResourceRecordSet, target *v1alpha3.ResourceRecordSetParameters) (*v1alpha3.ResourceRecordSetParameters, error) {
 	currentParams := &v1alpha3.ResourceRecordSetParameters{}
 	LateInitialize(currentParams, in)
 
@@ -146,19 +143,22 @@ func CreatePatch(in *route53.ResourceRecordSet,
 	return patch, nil
 }
 
-// GetResourceRecordSetOrErr returns recordSet if present or err
-func GetResourceRecordSetOrErr(ctx context.Context,
-	c Client, p v1alpha3.ResourceRecordSetParameters) (route53.ResourceRecordSet, error) {
+// GetResourceRecordSet returns recordSet if present or err
+func GetResourceRecordSet(ctx context.Context, c Client, p v1alpha3.ResourceRecordSetParameters) (route53.ResourceRecordSet, error) {
+	// check for the root "." found in DNS entries and add if not found
+	if !strings.HasSuffix(*p.Name, ".") {
+		p.Name = aws.String(fmt.Sprintf("%s.", *p.Name))
+	}
 	req := c.ListResourceRecordSetsRequest(&route53.ListResourceRecordSetsInput{
 		HostedZoneId: p.ZoneID,
 	})
 	res, err := req.Send(ctx)
 	if err != nil {
-		return route53.ResourceRecordSet{}, errors.New(err.Error())
+		return route53.ResourceRecordSet{}, err
 	}
 
 	for _, rrSet := range res.ResourceRecordSets {
-		if aws.StringValue(rrSet.Name) == *p.Name {
+		if aws.StringValue(rrSet.Name) == aws.StringValue(p.Name) && string(rrSet.Type) == aws.StringValue(p.Type) {
 			return rrSet, nil
 		}
 	}
@@ -166,33 +166,8 @@ func GetResourceRecordSetOrErr(ctx context.Context,
 	return route53.ResourceRecordSet{}, &NotFound{}
 }
 
-// IsRRSetNotFoundErr returns true if the error is because the item doesn't exist
-func IsRRSetNotFoundErr(err error) bool {
-	if notFoundErr, ok := err.(*NotFound); ok {
-		if notFoundErr.Error() == RRSetNotFound {
-			return true
-		}
-	}
-	return false
-}
-
 // StringValueFromRRType returns the string value of aws ResourceRecordType
 // passed in or "" if nil
 func StringValueFromRRType(rrType route53.RRType) string {
 	return string(rrType)
-}
-
-// UpdateAtProvider updates value at given provider from given ResourceRecordSet
-// This will be called from create flow as we can't use ChangeResourceRecordSetOutput
-func UpdateAtProvider(ap *v1alpha3.ResourceRecordSetObservation, r route53.ResourceRecordSet) {
-	ap.Name = r.Name
-	ap.Type = aws.String(StringValueFromRRType(r.Type))
-	ap.TTL = r.TTL
-
-	resourceRecords := make([]*v1alpha3.ResourceRecord, 0)
-	for _, item := range r.ResourceRecords {
-		rr := v1alpha3.ResourceRecord{Value: item.Value}
-		resourceRecords = append(resourceRecords, &rr)
-	}
-	ap.ResourceRecords = resourceRecords
 }

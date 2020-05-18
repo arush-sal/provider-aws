@@ -1,3 +1,19 @@
+/*
+Copyright 2019 The Crossplane Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package resourcerecordset
 
 import (
@@ -19,6 +35,7 @@ import (
 
 	"github.com/crossplane/provider-aws/apis/network/v1alpha3"
 	"github.com/crossplane/provider-aws/pkg/clients/resourcerecordset"
+	"github.com/crossplane/provider-aws/pkg/clients/zone"
 	"github.com/crossplane/provider-aws/pkg/controller/utils"
 )
 
@@ -28,6 +45,7 @@ const (
 	errCreate           = "failed to create the ResourceRecordSet resource"
 	errUpdate           = "failed to update the ResourceRecordSet resource"
 	errDelete           = "failed to delete the ResourceRecordSet resource"
+	errState            = "failed to determine resource state"
 )
 
 // SetupResourceRecordSet adds a controller that reconciles ResourceRecordSets.
@@ -80,8 +98,8 @@ func (e *external) Observe(ctx context.Context, mgd resource.Managed) (managed.E
 		return managed.ExternalObservation{}, errors.New(errUnexpectedObject)
 	}
 
-	rrset, err := resourcerecordset.GetResourceRecordSetOrErr(ctx, e.client, cr.Spec.ForProvider)
-	if resourcerecordset.IsRRSetNotFoundErr(err) {
+	rrset, err := resourcerecordset.GetResourceRecordSet(ctx, e.client, cr.Spec.ForProvider)
+	if _, ok := err.(*resourcerecordset.NotFound); ok {
 		return managed.ExternalObservation{ResourceExists: false}, nil
 	}
 	if err != nil {
@@ -89,16 +107,14 @@ func (e *external) Observe(ctx context.Context, mgd resource.Managed) (managed.E
 		return managed.ExternalObservation{
 			ResourceExists:    false,
 			ConnectionDetails: managed.ConnectionDetails{},
-		}, errors.Wrap(err, errList)
+		}, errors.Wrap(resource.Ignore(zone.IsErrorNoSuchHostedZone, err), errList)
 	}
-
-	cr.Status.AtProvider = resourcerecordset.GenerateObservation(rrset)
 
 	cr.Status.SetConditions(runtimev1alpha1.Available())
 
 	upToDate, err := resourcerecordset.IsUpToDate(cr.Spec.ForProvider, rrset)
 	if err != nil {
-		return managed.ExternalObservation{}, errors.Wrap(err, "asdf")
+		return managed.ExternalObservation{}, errors.Wrap(err, errState)
 	}
 
 	return managed.ExternalObservation{
@@ -122,11 +138,6 @@ func (e *external) Create(ctx context.Context, mgd resource.Managed) (managed.Ex
 	if err != nil {
 		return managed.ExternalCreation{}, errors.Wrap(err, errCreate)
 	}
-
-	// One time set of up AtProvider manually.
-	// Because AWS ChangeResourceRecordSetOutput doesn't provide enough params, we are forced
-	// to use input as source of truth.
-	resourcerecordset.UpdateAtProvider(&cr.Status.AtProvider, *input.ChangeBatch.Changes[0].ResourceRecordSet)
 
 	return managed.ExternalCreation{}, errors.Wrap(nil, errCreate)
 }
@@ -163,9 +174,6 @@ func (e *external) Delete(ctx context.Context, mgd resource.Managed) error {
 	//
 	// For any 404 when deleting, error code returned is nil.
 	//So we can safely ignore this and catch any other error.
-	if err != nil {
-		return errors.Wrap(err, errDelete)
-	}
 
-	return errors.Wrap(nil, errDelete)
+	return errors.Wrap(resource.Ignore(zone.IsErrorNoSuchHostedZone, err), errDelete)
 }

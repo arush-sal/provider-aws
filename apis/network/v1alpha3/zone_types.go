@@ -19,7 +19,6 @@ package v1alpha3
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/aws/aws-sdk-go-v2/service/route53"
 	runtimev1alpha1 "github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
 )
 
@@ -55,19 +54,6 @@ type ZoneStatus struct {
 
 // ZoneParameters define the desired state of an AWS Route53 Hosted Zone.
 type ZoneParameters struct {
-	// CallerReference is an unique string that identifies the request and that
-	// allows failed Zone create requests to be retried without the risk of
-	// executing the operation twice.
-	// +immutable
-	CallerReference *string `json:"callerref"`
-
-	// Any comments that you want to include about the hosted zone.
-	Comment *string `json:"comment,omitempty"`
-
-	// A value that indicates whether this is a private hosted zone.
-	// +immutable
-	PrivateZone *bool `json:"privatezone,omitempty"`
-
 	// The name of the domain. Specify a fully qualified domain name, for example,
 	// www.example.com. The trailing dot is optional; Amazon Route 53 assumes that
 	// the domain name is fully qualified. This means that Route 53 treats www.example.com
@@ -78,17 +64,44 @@ type ZoneParameters struct {
 	// other than Route 53, change the name servers for your domain to the set of
 	// NameServers that CreateHostedZone returns in DelegationSet.
 	// +immutable
+	// +kubebuilder:validation:Required
 	Name *string `json:"name"`
+
+	// CallerReference is an unique string that identifies the request and that
+	// allows failed Zone create requests to be retried without the risk of
+	// executing the operation twice.
+	// +immutable
+	// +optional
+	CallerReference *string `json:"callerref,omitempty"`
+
+	// Any comments that you want to include about the hosted zone.
+	// +optional
+	Comment *string `json:"comment,omitempty"`
+
+	// A value that indicates whether this is a private hosted zone.
+	// +immutable
+	// +optional
+	PrivateZone *bool `json:"privateZone,omitempty"`
 
 	// (Private hosted zones only) The ID of an Amazon VPC that you're
 	// associating with this hosted zone. You can specify only one Amazon VPC
 	// when you create a private hosted zone.
 	// +immutable
-	VPCId *string `json:"VPCId,omitempty"`
+	// +optional
+	VPCID *string `json:"VPCId,omitempty"`
 
 	// (Private hosted zones only) The region that an Amazon VPC was created in.
 	// +immutable
+	// +optional
 	VPCRegion *string `json:"VPCRegion,omitempty"`
+
+	// (Private hosted zones only) VPCIdRef references a VPC to retrieves its VPC Id
+	// +optional
+	VPCIDRef *runtimev1alpha1.Reference `json:"VPCIdRef,omitempty"`
+
+	// VPCIdSelector selects a reference to a VPC to retrieves its VPC Id
+	// +optional
+	VPCIDSelector *runtimev1alpha1.Selector `json:"VPCIdSelector,omitempty"`
 }
 
 // ZoneObservation keeps the state for the external resource.
@@ -98,9 +111,6 @@ type ZoneObservation struct {
 
 	// The number of resource record sets in the hosted zone.
 	ResourceRecordCount int64 `json:"ResourceRecordSetCount"`
-
-	// Location represents the unique URL of the new hosted zone.
-	Location string `json:"Location"`
 }
 
 // DelegationSet describes the name servers for this hosted zone.
@@ -117,17 +127,4 @@ type ZoneList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 
 	Items []Zone `json:"items"`
-}
-
-// Update the status
-func (status *ZoneObservation) Update(op *route53.CreateHostedZoneOutput) {
-	if op.HostedZone.Id != nil {
-		status.ID = *op.HostedZone.Id
-	}
-	if op.HostedZone.ResourceRecordSetCount != nil {
-		status.ResourceRecordCount = *op.HostedZone.ResourceRecordSetCount
-	}
-	if op.Location != nil {
-		status.Location = *op.Location
-	}
 }

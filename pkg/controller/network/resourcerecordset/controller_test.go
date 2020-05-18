@@ -1,3 +1,18 @@
+/*
+Copyright 2019 The Crossplane Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 package resourcerecordset
 
 import (
@@ -8,40 +23,95 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/route53"
+	awsroute53 "github.com/aws/aws-sdk-go-v2/service/route53"
+	"github.com/google/go-cmp/cmp"
 	"github.com/pkg/errors"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	corev1alpha1 "github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
-	"github.com/crossplane/crossplane-runtime/pkg/meta"
+	runtimev1alpha1 "github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
+	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
 	"github.com/crossplane/crossplane-runtime/pkg/resource"
 	"github.com/crossplane/crossplane-runtime/pkg/test"
-	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/crossplane/provider-aws/apis/network/v1alpha3"
+	"github.com/crossplane/provider-aws/pkg/clients/resourcerecordset"
+	"github.com/crossplane/provider-aws/pkg/clients/resourcerecordset/fake"
 )
 
-type MockResourceRecordSetClient struct {
-	MockChangeResourceRecordSetsRequest func(*route53.ChangeResourceRecordSetsInput) route53.ChangeResourceRecordSetsRequest
-	MockListResourceRecordSetsRequest   func(*route53.ListResourceRecordSetsInput) route53.ListResourceRecordSetsRequest
-}
-
-func (m *MockResourceRecordSetClient) ChangeResourceRecordSetsRequest(input *route53.ChangeResourceRecordSetsInput) route53.ChangeResourceRecordSetsRequest {
-	return m.MockChangeResourceRecordSetsRequest(input)
-}
-
-func (m *MockResourceRecordSetClient) ListResourceRecordSetsRequest(input *route53.ListResourceRecordSetsInput) route53.ListResourceRecordSetsRequest {
-	return m.MockListResourceRecordSetsRequest(input)
-}
+const (
+	providerName = "aws-creds"
+	testRegion   = "us-east-1"
+)
 
 var (
 	mockExternalClient external
-	mockClient         MockResourceRecordSetClient
+	mockClient         fake.MockResourceRecordSetClient
 
 	unexpectedItem resource.Managed
+	errBoom        = errors.New("Some random error")
+	rrName         = aws.String("crossplane.io")
+	rrtype         = aws.String("A")
+	TTL            = aws.Int64(300)
+	rRecords       = []string{"0.0.0.0"}
+	zoneID         = aws.String("/hostedzone/XXXXXXXXXXXXXXXXXXX")
+
+	generateFn = func(p *v1alpha3.ResourceRecordSetParameters, action awsroute53.ChangeAction) *awsroute53.ChangeResourceRecordSetsInput {
+		return &awsroute53.ChangeResourceRecordSetsInput{
+			HostedZoneId: zoneID,
+		}
+	}
+	changeFn = func(*awsroute53.ChangeResourceRecordSetsInput) awsroute53.ChangeResourceRecordSetsRequest {
+		return awsroute53.ChangeResourceRecordSetsRequest{
+			Request: &aws.Request{
+				HTTPRequest: &http.Request{},
+				Data:        &awsroute53.ChangeResourceRecordSetsOutput{},
+				Error:       nil,
+			},
+		}
+	}
+	changeErrFn = func(*awsroute53.ChangeResourceRecordSetsInput) awsroute53.ChangeResourceRecordSetsRequest {
+		return awsroute53.ChangeResourceRecordSetsRequest{
+			Request: &aws.Request{HTTPRequest: &http.Request{}, Error: errBoom},
+		}
+	}
 )
 
+type rrModifier func(*v1alpha3.ResourceRecordSet)
+
+type args struct {
+	kube    client.Client
+	route53 resourcerecordset.Client
+	cr      resource.Managed
+}
+
+func withConditions(c ...runtimev1alpha1.Condition) rrModifier {
+	return func(r *v1alpha3.ResourceRecordSet) { r.Status.ConditionedStatus.Conditions = c }
+}
+
+func rrTester(m ...rrModifier) *v1alpha3.ResourceRecordSet {
+	cr := &v1alpha3.ResourceRecordSet{
+		Spec: v1alpha3.ResourceRecordSetSpec{
+			ResourceSpec: runtimev1alpha1.ResourceSpec{
+				ProviderReference: &corev1.ObjectReference{Name: providerName},
+			},
+			ForProvider: v1alpha3.ResourceRecordSetParameters{
+				Name:    rrName,
+				Type:    rrtype,
+				TTL:     TTL,
+				Records: rRecords,
+				ZoneID:  zoneID,
+			},
+		},
+	}
+	for _, f := range m {
+		f(cr)
+	}
+	return cr
+}
+
 func TestMain(m *testing.M) {
-	mockClient = MockResourceRecordSetClient{}
+	mockClient = fake.MockResourceRecordSetClient{}
 	mockExternalClient = external{
 		client: &mockClient,
 		kube: &test.MockClient{
@@ -52,314 +122,372 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func Test_Observe(t *testing.T) {
-	g := gomega.NewGomegaWithT(t)
+func TestConnect(t *testing.T) {
 
-	name := "x.x.x."
-	mockManaged := v1alpha3.ResourceRecordSet{}
-	meta.SetExternalName(&mockManaged, name)
-
-	incorrectName := "p.p.p."
-	mockManagedRRNotPresent := v1alpha3.ResourceRecordSet{
-		Spec: v1alpha3.ResourceRecordSetSpec{
-			ForProvider: v1alpha3.ResourceRecordSetParameters{
-				Name: &incorrectName,
-			},
-		},
+	type args struct {
+		cr          resource.Managed
+		newClientFn func(*aws.Config) resourcerecordset.Client
+		awsConfigFn func(context.Context, client.Reader, *corev1.ObjectReference) (*aws.Config, error)
 	}
-	meta.SetExternalName(&mockManagedRRNotPresent, name)
-
-	mockManagedRRPresent := v1alpha3.ResourceRecordSet{
-		Spec: v1alpha3.ResourceRecordSetSpec{
-			ForProvider: v1alpha3.ResourceRecordSetParameters{
-				Name: &name,
-			},
-		},
-	}
-	meta.SetExternalName(&mockManagedRRPresent, name)
-
-	mockExternal := &route53.ResourceRecordSet{
-		Name: aws.String(name),
+	type want struct {
+		err error
 	}
 
-	var mockClientErr error
-	var itemsList []route53.ResourceRecordSet
-
-	mockClient.MockChangeResourceRecordSetsRequest = func(input *route53.ChangeResourceRecordSetsInput) route53.ChangeResourceRecordSetsRequest {
-		return route53.ChangeResourceRecordSetsRequest{
-			Request: &aws.Request{
-				HTTPRequest: &http.Request{},
-				Data:        &route53.ChangeResourceRecordSetsOutput{},
-				Error:       mockClientErr,
-			},
-		}
-	}
-
-	mockClient.MockListResourceRecordSetsRequest = func(input *route53.ListResourceRecordSetsInput) route53.ListResourceRecordSetsRequest {
-		return route53.ListResourceRecordSetsRequest{
-			Request: &aws.Request{
-				HTTPRequest: &http.Request{},
-				Data: &route53.ListResourceRecordSetsOutput{
-					ResourceRecordSets: itemsList,
-				},
-				Error: mockClientErr,
-			},
-		}
-	}
-
-	for _, tc := range []struct {
-		description               string
-		managedObj                resource.Managed
-		itemsReturned             []route53.ResourceRecordSet
-		clientErr                 error
-		expectedErrNil            bool
-		expectedResourceExist     bool
-		expectedResourceAvailable bool
+	cases := map[string]struct {
+		args
+		want
 	}{
-		{
-			"upexpected managed resource should return error",
-			unexpectedItem,
-			nil,
-			nil,
-			false,
-			false,
-			false,
+		"ValidInput": {
+			args: args{
+				newClientFn: func(config *aws.Config) resourcerecordset.Client {
+					if diff := cmp.Diff(testRegion, config.Region); diff != "" {
+						t.Errorf("r: -want, +got:\n%s", diff)
+					}
+					return nil
+				},
+				awsConfigFn: func(_ context.Context, _ client.Reader, p *corev1.ObjectReference) (*aws.Config, error) {
+					if diff := cmp.Diff(providerName, p.Name); diff != "" {
+						t.Errorf("r: -want, +got:\n%s", diff)
+					}
+					return &aws.Config{Region: testRegion}, nil
+				},
+				cr: rrTester(),
+			},
+			want: want{
+				err: nil,
+			},
 		},
-		{
-			"if item's identifier is not yet set, returns expected",
-			&v1alpha3.ResourceRecordSet{},
-			nil,
-			nil,
-			true,
-			false,
-			false,
-		},
-		{
-			"if external resource doesn't exist, it should return expected",
-			&mockManagedRRNotPresent,
-			[]route53.ResourceRecordSet{*mockExternal},
-			nil,
-			true,
-			false,
-			true,
-		},
-		{
-			"If external resource fails, it should return error",
-			mockManaged.DeepCopy(),
-			nil,
-			errors.New("Error in API call"),
-			false,
-			false,
-			false,
-		},
-	} {
-		mockClientErr = tc.clientErr
-		itemsList = tc.itemsReturned
-		res, err := mockExternalClient.Observe(context.Background(), tc.managedObj)
+	}
 
-		g.Expect(err == nil).To(gomega.Equal(tc.expectedErrNil), tc.description)
-		g.Expect(res.ResourceExists).To(gomega.Equal(tc.expectedResourceExist), tc.description)
-
-		if tc.expectedResourceExist {
-			mgd := tc.managedObj.(*v1alpha3.ResourceRecordSet)
-
-			if tc.expectedResourceAvailable {
-				g.Expect(mgd.Status.Conditions[0].Type).To(gomega.Equal(corev1alpha1.TypeReady), tc.description)
-				g.Expect(mgd.Status.Conditions[0].Status).To(gomega.Equal(corev1.ConditionTrue), tc.description)
-				g.Expect(mgd.Status.Conditions[0].Reason).To(gomega.Equal(corev1alpha1.ReasonAvailable), tc.description)
-			} else {
-				g.Expect(mgd.Status.Conditions[0].Type).To(gomega.Equal(corev1alpha1.TypeReady), tc.description)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := &connector{newClientFn: tc.newClientFn, awsConfigFn: tc.awsConfigFn}
+			_, err := c.Connect(context.Background(), tc.args.cr)
+			if diff := cmp.Diff(tc.err, err, test.EquateErrors()); diff != "" {
+				t.Errorf("r: -want, +got:\n%s", diff)
 			}
-			g.Expect(mgd.Status.Conditions[0].Type).To(gomega.Equal(corev1alpha1.TypeReady), tc.description)
-		}
+		})
 	}
-
 }
 
-func Test_Create(t *testing.T) {
-	g := gomega.NewGomegaWithT(t)
+func TestObserve(t *testing.T) {
 
-	name := "x.x.x."
-	mockManaged := v1alpha3.ResourceRecordSet{}
-	meta.SetExternalName(&mockManaged, name)
-
-	var mockClientErr error
-	var itemsList []route53.ResourceRecordSet
-
-	mockClient.MockChangeResourceRecordSetsRequest = func(input *route53.ChangeResourceRecordSetsInput) route53.ChangeResourceRecordSetsRequest {
-		return route53.ChangeResourceRecordSetsRequest{
-			Request: &aws.Request{
-				HTTPRequest: &http.Request{},
-				Data:        &route53.ChangeResourceRecordSetsOutput{},
-				Error:       mockClientErr,
+	name := *rrName + "."
+	rrSet := awsroute53.ResourceRecordSet{
+		Name: &name,
+		Type: route53.RRType("A"),
+		TTL:  TTL,
+		ResourceRecords: []route53.ResourceRecord{
+			{
+				Value: aws.String("0.0.0.0"),
 			},
-		}
+		},
 	}
 
-	mockClient.MockListResourceRecordSetsRequest = func(input *route53.ListResourceRecordSetsInput) route53.ListResourceRecordSetsRequest {
-		return route53.ListResourceRecordSetsRequest{
-			Request: &aws.Request{
-				HTTPRequest: &http.Request{},
-				Data: &route53.ListResourceRecordSetsOutput{
-					ResourceRecordSets: itemsList,
+	type want struct {
+		cr     resource.Managed
+		result managed.ExternalObservation
+		err    error
+	}
+
+	cases := map[string]struct {
+		args
+		want
+	}{
+		"VaildInput": {
+			args: args{
+				kube: &test.MockClient{
+					MockStatusUpdate: test.NewMockStatusUpdateFn(nil),
 				},
-				Error: mockClientErr,
+				route53: &fake.MockResourceRecordSetClient{
+					MockGetResourceRecordSet: func(ctx context.Context, c resourcerecordset.Client, id, rrName *string) (awsroute53.ResourceRecordSet, error) {
+						return rrSet, nil
+					},
+					MockListResourceRecordSetsRequest: func(*route53.ListResourceRecordSetsInput) awsroute53.ListResourceRecordSetsRequest {
+						return route53.ListResourceRecordSetsRequest{
+							Request: &aws.Request{
+								HTTPRequest: &http.Request{},
+								Data: &route53.ListResourceRecordSetsOutput{
+									ResourceRecordSets: []awsroute53.ResourceRecordSet{rrSet},
+								},
+								Error: nil,
+							},
+						}
+					},
+				},
+				cr: rrTester(),
 			},
-		}
+			want: want{
+				cr: rrTester(withConditions(runtimev1alpha1.Available())),
+				result: managed.ExternalObservation{
+					ResourceExists:    true,
+					ResourceUpToDate:  true,
+					ConnectionDetails: managed.ConnectionDetails{},
+				},
+			},
+		},
+		"InValidInput": {
+			args: args{
+				cr: unexpectedItem,
+			},
+			want: want{
+				cr:  unexpectedItem,
+				err: errors.New(errUnexpectedObject),
+			},
+		},
+		"ResourceDoesNotExist": {
+			args: args{
+				route53: &fake.MockResourceRecordSetClient{
+					MockGetResourceRecordSet: func(ctx context.Context, c resourcerecordset.Client, id, rrName *string) (awsroute53.ResourceRecordSet, error) {
+						return awsroute53.ResourceRecordSet{
+							Name: aws.String(""),
+							Type: route53.RRType(""),
+							TTL:  aws.Int64(0),
+							ResourceRecords: []route53.ResourceRecord{
+								{
+									Value: aws.String(""),
+								},
+							},
+						}, nil
+					},
+					MockListResourceRecordSetsRequest: func(*awsroute53.ListResourceRecordSetsInput) awsroute53.ListResourceRecordSetsRequest {
+						return awsroute53.ListResourceRecordSetsRequest{
+							Request: &aws.Request{
+								HTTPRequest: &http.Request{},
+								Data: &route53.ListResourceRecordSetsOutput{
+									ResourceRecordSets: []awsroute53.ResourceRecordSet{{
+										Name: aws.String(""),
+										Type: route53.RRType(""),
+										TTL:  aws.Int64(0),
+										ResourceRecords: []route53.ResourceRecord{
+											{
+												Value: aws.String(""),
+											},
+										},
+									}},
+								},
+								Error: nil,
+							},
+						}
+					},
+				},
+				cr: rrTester(),
+			},
+			want: want{
+				cr: rrTester(),
+				result: managed.ExternalObservation{
+					ResourceExists: false,
+				},
+			},
+		},
 	}
 
-	for _, tc := range []struct {
-		description    string
-		managedObj     resource.Managed
-		clientErr      error
-		expectedErrNil bool
-	}{
-		{
-			"valid input should return expected",
-			mockManaged.DeepCopy(),
-			nil,
-			true,
-		},
-		{
-			"unexpected managed resource should return error",
-			unexpectedItem,
-			nil,
-			false,
-		},
-		{
-			"if creating resource fails, it should return error",
-			mockManaged.DeepCopy(),
-			errors.New("some error"),
-			false,
-		},
-	} {
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := &external{kube: test.NewMockClient(), client: tc.route53}
+			o, err := e.Observe(context.Background(), tc.args.cr)
 
-		mockClientErr = tc.clientErr
-		_, err := mockExternalClient.Create(context.Background(), tc.managedObj)
-
-		g.Expect(err == nil).To(gomega.Equal(tc.expectedErrNil), tc.description)
-		if tc.expectedErrNil {
-			mgd := tc.managedObj.(*v1alpha3.ResourceRecordSet)
-			g.Expect(mgd.Status.Conditions[0].Type).To(gomega.Equal(corev1alpha1.TypeReady), tc.description)
-			g.Expect(mgd.Status.Conditions[0].Status).To(gomega.Equal(corev1.ConditionFalse), tc.description)
-			g.Expect(mgd.Status.Conditions[0].Reason).To(gomega.Equal(corev1alpha1.ReasonCreating), tc.description)
-		}
+			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+				t.Errorf("r: -want, +got:\n%s", diff)
+			}
+			if diff := cmp.Diff(tc.want.cr, tc.args.cr, test.EquateConditions()); diff != "" {
+				t.Errorf("r: -want, +got:\n%s", diff)
+			}
+			if diff := cmp.Diff(tc.want.result, o); diff != "" {
+				t.Errorf("r: -want, +got:\n%s", diff)
+			}
+		})
 	}
 }
 
-func Test_Update(t *testing.T) {
-	g := gomega.NewGomegaWithT(t)
+func TestCreate(t *testing.T) {
 
-	name := "random.name."
-	mockManaged := v1alpha3.ResourceRecordSet{}
-	meta.SetExternalName(&mockManaged, name)
-
-	var mockClientErr error
-
-	mockClient.MockChangeResourceRecordSetsRequest = func(input *route53.ChangeResourceRecordSetsInput) route53.ChangeResourceRecordSetsRequest {
-		return route53.ChangeResourceRecordSetsRequest{
-			Request: &aws.Request{
-				HTTPRequest: &http.Request{},
-				Data:        &route53.ChangeResourceRecordSetsOutput{},
-				Error:       mockClientErr,
-			},
-		}
+	type want struct {
+		cr     resource.Managed
+		result managed.ExternalCreation
+		err    error
 	}
 
-	for _, tc := range []struct {
-		description    string
-		managedObj     resource.Managed
-		clientErr      error
-		expectedErrNil bool
+	cases := map[string]struct {
+		args
+		want
 	}{
-		{
-			"valid input should return expected",
-			mockManaged.DeepCopy(),
-			nil,
-			true,
+		"VaildInput": {
+			args: args{
+				route53: &fake.MockResourceRecordSetClient{
+					MockGenerateChangeResourceRecordSetsInput: generateFn,
+					MockChangeResourceRecordSetsRequest:       changeFn,
+				},
+				cr: rrTester(),
+			},
+			want: want{
+				cr: rrTester(withConditions(runtimev1alpha1.Creating())),
+			},
 		},
-		{
-			"unexpected managed resource should return error",
-			unexpectedItem,
-			nil,
-			false,
+		"InValidInput": {
+			args: args{
+				cr: unexpectedItem,
+			},
+			want: want{
+				cr:  unexpectedItem,
+				err: errors.New(errUnexpectedObject),
+			},
 		},
-	} {
-		mockClientErr = tc.clientErr
+		"ClientError": {
+			args: args{
+				route53: &fake.MockResourceRecordSetClient{
+					MockGenerateChangeResourceRecordSetsInput: generateFn,
+					MockChangeResourceRecordSetsRequest:       changeErrFn,
+				},
+				cr: rrTester(),
+			},
+			want: want{
+				cr:  rrTester(withConditions(runtimev1alpha1.Creating())),
+				err: errors.Wrap(errBoom, errCreate),
+			},
+		},
+	}
 
-		_, err := mockExternalClient.Update(context.Background(), tc.managedObj)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := &external{client: tc.route53}
+			o, err := e.Create(context.Background(), tc.args.cr)
 
-		g.Expect(err == nil).To(gomega.Equal(tc.expectedErrNil), tc.description)
+			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+				t.Errorf("r: -want, +got:\n%s", diff)
+			}
+			if diff := cmp.Diff(tc.want.cr, tc.args.cr, test.EquateConditions()); diff != "" {
+				t.Errorf("r: -want, +got:\n%s", diff)
+			}
+			if diff := cmp.Diff(tc.want.result, o); diff != "" {
+				t.Errorf("r: -want, +got:\n%s", diff)
+			}
+		})
 	}
 }
 
-func Test_Delete(t *testing.T) {
-	g := gomega.NewGomegaWithT(t)
-
-	name := "random.name."
-	mockManaged := v1alpha3.ResourceRecordSet{
-		Spec: v1alpha3.ResourceRecordSetSpec{
-			ForProvider: v1alpha3.ResourceRecordSetParameters{
-				Name: &name,
-			},
-		},
-	}
-	meta.SetExternalName(&mockManaged, name)
-
-	var mockClientErr error
-
-	mockClient.MockChangeResourceRecordSetsRequest = func(input *route53.ChangeResourceRecordSetsInput) route53.ChangeResourceRecordSetsRequest {
-		return route53.ChangeResourceRecordSetsRequest{
-			Request: &aws.Request{
-				HTTPRequest: &http.Request{},
-				Data:        &route53.ChangeResourceRecordSetsOutput{},
-				Error:       mockClientErr,
-			},
-		}
+func TestUpdate(t *testing.T) {
+	type want struct {
+		cr     resource.Managed
+		result managed.ExternalUpdate
+		err    error
 	}
 
-	for _, tc := range []struct {
-		description    string
-		managedObj     resource.Managed
-		clientErr      error
-		expectedErrNil bool
+	cases := map[string]struct {
+		args
+		want
 	}{
-		{
-			"valid input should return expected",
-			mockManaged.DeepCopy(),
-			nil,
-			true,
+		"VaildInput": {
+			args: args{
+				route53: &fake.MockResourceRecordSetClient{
+					MockGenerateChangeResourceRecordSetsInput: generateFn,
+					MockChangeResourceRecordSetsRequest:       changeFn,
+				},
+				cr: rrTester(),
+			},
+			want: want{
+				cr: rrTester(),
+			},
 		},
-		{
-			"unexpected managed resource should return error",
-			unexpectedItem,
-			nil,
-			false,
+		"InValidInput": {
+			args: args{
+				cr: unexpectedItem,
+			},
+			want: want{
+				cr:  unexpectedItem,
+				err: errors.New(errUnexpectedObject),
+			},
 		},
-		{
-			"if the resource doesn't exist deleting resource should not return an error",
-			mockManaged.DeepCopy(),
-			nil, // ChangeResourceRecordSetOutput return nil when record doesn't exist
-			true,
+		"ClientError": {
+			args: args{
+				route53: &fake.MockResourceRecordSetClient{
+					MockGenerateChangeResourceRecordSetsInput: generateFn,
+					MockChangeResourceRecordSetsRequest:       changeErrFn,
+				},
+				cr: rrTester(),
+			},
+			want: want{
+				cr:  rrTester(),
+				err: errors.Wrap(errBoom, errUpdate),
+			},
 		},
-		{
-			"if deleting resource fails, it should return error",
-			mockManaged.DeepCopy(),
-			errors.New("some error"),
-			false,
-		},
-	} {
-		mockClientErr = tc.clientErr
-
-		err := mockExternalClient.Delete(context.Background(), tc.managedObj)
-
-		g.Expect(err == nil).To(gomega.Equal(tc.expectedErrNil), tc.description)
-		if tc.expectedErrNil {
-			mgd := tc.managedObj.(*v1alpha3.ResourceRecordSet)
-			g.Expect(mgd.Status.Conditions[0].Type).To(gomega.Equal(corev1alpha1.TypeReady), tc.description)
-			g.Expect(mgd.Status.Conditions[0].Status).To(gomega.Equal(corev1.ConditionFalse), tc.description)
-			g.Expect(mgd.Status.Conditions[0].Reason).To(gomega.Equal(corev1alpha1.ReasonDeleting), tc.description)
-		}
 	}
 
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := &external{client: tc.route53}
+			o, err := e.Update(context.Background(), tc.args.cr)
+
+			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+				t.Errorf("r: -want, +got:\n%s", diff)
+			}
+			if diff := cmp.Diff(tc.want.cr, tc.args.cr, test.EquateConditions()); diff != "" {
+				t.Errorf("r: -want, +got:\n%s", diff)
+			}
+			if diff := cmp.Diff(tc.want.result, o); diff != "" {
+				t.Errorf("r: -want, +got:\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestDelete(t *testing.T) {
+	type want struct {
+		cr  resource.Managed
+		err error
+	}
+
+	cases := map[string]struct {
+		args
+		want
+	}{
+		"VaildInput": {
+			args: args{
+				route53: &fake.MockResourceRecordSetClient{
+					MockGenerateChangeResourceRecordSetsInput: generateFn,
+					MockChangeResourceRecordSetsRequest:       changeFn,
+				},
+				cr: rrTester(),
+			},
+			want: want{
+				cr: rrTester(withConditions(runtimev1alpha1.Deleting())),
+			},
+		},
+		"InValidInput": {
+			args: args{
+				cr: unexpectedItem,
+			},
+			want: want{
+				cr:  unexpectedItem,
+				err: errors.New(errUnexpectedObject),
+			},
+		},
+		"ClientError": {
+			args: args{
+				route53: &fake.MockResourceRecordSetClient{
+					MockGenerateChangeResourceRecordSetsInput: generateFn,
+					MockChangeResourceRecordSetsRequest:       changeErrFn,
+				},
+				cr: rrTester(),
+			},
+			want: want{
+				cr:  rrTester(withConditions(runtimev1alpha1.Deleting())),
+				err: errors.Wrap(errBoom, errDelete),
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := &external{client: tc.route53}
+			err := e.Delete(context.Background(), tc.args.cr)
+
+			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+				t.Errorf("r: -want, +got:\n%s", diff)
+			}
+			if diff := cmp.Diff(tc.want.cr, tc.args.cr, test.EquateConditions()); diff != "" {
+				t.Errorf("r: -want, +got:\n%s", diff)
+			}
+		})
+	}
 }

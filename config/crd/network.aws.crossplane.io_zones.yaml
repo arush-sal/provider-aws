@@ -140,6 +140,31 @@ spec:
                     that you're associating with this hosted zone. You can specify
                     only one Amazon VPC when you create a private hosted zone.
                   type: string
+                VPCIdRef:
+                  description: (Private hosted zones only) VPCIdRef references a VPC
+                    to retrieves its VPC Id
+                  properties:
+                    name:
+                      description: Name of the referenced object.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                VPCIdSelector:
+                  description: VPCIdSelector selects a reference to a VPC to retrieves
+                    its VPC Id
+                  properties:
+                    matchControllerRef:
+                      description: MatchControllerRef ensures an object with the same
+                        controller reference as the selecting object is selected.
+                      type: boolean
+                    matchLabels:
+                      additionalProperties:
+                        type: string
+                      description: MatchLabels ensures an object with matching labels
+                        is selected.
+                      type: object
+                  type: object
                 VPCRegion:
                   description: (Private hosted zones only) The region that an Amazon
                     VPC was created in.
@@ -165,12 +190,11 @@ spec:
                     change the name servers for your domain to the set of NameServers
                     that CreateHostedZone returns in DelegationSet."
                   type: string
-                privatezone:
+                privateZone:
                   description: A value that indicates whether this is a private hosted
                     zone.
                   type: boolean
               required:
-              - callerref
               - name
               type: object
             providerRef:
@@ -255,17 +279,12 @@ spec:
                 Id:
                   description: ID is the unique URL representing the new hosted zone.
                   type: string
-                Location:
-                  description: Location represents the unique URL of the new hosted
-                    zone.
-                  type: string
                 ResourceRecordSetCount:
                   description: The number of resource record sets in the hosted zone.
                   format: int64
                   type: integer
               required:
               - Id
-              - Location
               - ResourceRecordSetCount
               type: object
             bindingPhase:

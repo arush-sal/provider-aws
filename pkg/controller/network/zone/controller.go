@@ -20,6 +20,7 @@ import (
 	"context"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/google/go-cmp/cmp"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -106,14 +107,14 @@ func (e *external) Observe(ctx context.Context, mgd resource.Managed) (managed.E
 		return managed.ExternalObservation{}, errors.Wrap(err, errKubeUpdate)
 	}
 
-	if cr.Status.AtProvider.ID == "" {
+	if meta.GetExternalName(cr) == "" {
 		return managed.ExternalObservation{
 			ResourceExists:    false,
 			ConnectionDetails: managed.ConnectionDetails{},
 		}, nil
 	}
 
-	res, err := e.client.GetZoneRequest(&cr.Status.AtProvider.ID).Send(ctx)
+	res, err := e.client.GetZoneRequest(meta.GetExternalName(cr)).Send(ctx)
 
 	if err != nil {
 		return managed.ExternalObservation{}, errors.Wrap(resource.Ignore(zone.IsErrorNoSuchHostedZone, err), errGet)
@@ -121,14 +122,17 @@ func (e *external) Observe(ctx context.Context, mgd resource.Managed) (managed.E
 
 	cr.Status.SetConditions(runtimev1alpha1.Available())
 
-	if (cr.Spec.ForProvider.Comment != nil && res.HostedZone.Config.Comment == nil) ||
-		(cr.Spec.ForProvider.Comment == nil && res.HostedZone.Config.Comment != nil) ||
-		(*cr.Spec.ForProvider.Comment != *res.HostedZone.Config.Comment) {
+	if !cmp.Equal(aws.StringValue(cr.Spec.ForProvider.Comment), aws.StringValue(res.HostedZone.Config.Comment)) {
 		return managed.ExternalObservation{
 			ResourceExists:    true,
 			ResourceUpToDate:  false,
 			ConnectionDetails: managed.ConnectionDetails{},
 		}, nil
+	}
+
+	zone.Update(&cr.Status.AtProvider, res.GetHostedZoneOutput.HostedZone)
+	if err := e.kube.Status().Update(ctx, cr); err != nil {
+		return managed.ExternalObservation{}, errors.Wrap(err, errKubeUpdate)
 	}
 
 	return managed.ExternalObservation{
@@ -150,7 +154,7 @@ func (e *external) Create(ctx context.Context, mgd resource.Managed) (managed.Ex
 	res, err := e.client.CreateZoneRequest(cr).Send(ctx)
 
 	if res != nil {
-		cr.Status.AtProvider.Update(res.CreateHostedZoneOutput)
+		zone.Update(&cr.Status.AtProvider, res.CreateHostedZoneOutput.HostedZone)
 		meta.SetExternalName(cr, aws.StringValue(res.CreateHostedZoneOutput.HostedZone.Id))
 	}
 
@@ -167,7 +171,7 @@ func (e *external) Update(ctx context.Context, mgd resource.Managed) (managed.Ex
 		return managed.ExternalUpdate{}, errors.New(errUnexpectedObject)
 	}
 
-	_, err := e.client.UpdateZoneRequest(&cr.Status.AtProvider.ID, cr.Spec.ForProvider.Comment).Send(ctx)
+	_, err := e.client.UpdateZoneRequest(aws.String(meta.GetExternalName(cr)), cr.Spec.ForProvider.Comment).Send(ctx)
 
 	return managed.ExternalUpdate{}, errors.Wrap(err, errUpdate)
 }
@@ -180,7 +184,7 @@ func (e *external) Delete(ctx context.Context, mgd resource.Managed) error {
 
 	cr.Status.SetConditions(runtimev1alpha1.Deleting())
 
-	_, err := e.client.DeleteZoneRequest(&cr.Status.AtProvider.ID).Send(ctx)
+	_, err := e.client.DeleteZoneRequest(aws.String(meta.GetExternalName(cr))).Send(ctx)
 
 	return errors.Wrap(resource.Ignore(zone.IsErrorNoSuchHostedZone, err), errDelete)
 }

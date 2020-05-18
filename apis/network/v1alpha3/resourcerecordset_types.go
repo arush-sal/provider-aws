@@ -9,41 +9,41 @@ import (
 type DNSRecordType string
 
 const (
-	// DNSRecordTypeSoa represents DNS SOA record type.
-	DNSRecordTypeSoa DNSRecordType = "SOA"
+	// DNSRecordTypeSOA represents DNS SOA record type.
+	DNSRecordTypeSOA DNSRecordType = "SOA"
 
 	// DNSRecordTypeA represents DNS A record type.
 	DNSRecordTypeA DNSRecordType = "A"
 
-	// DNSRecordTypeTxt represents DNS TXT record type.
-	DNSRecordTypeTxt DNSRecordType = "TXT"
+	// DNSRecordTypeTXT represents DNS TXT record type.
+	DNSRecordTypeTXT DNSRecordType = "TXT"
 
-	// DNSRecordTypeNs represents DNS NS record type.
-	DNSRecordTypeNs DNSRecordType = "NS"
+	// DNSRecordTypeNS represents DNS NS record type.
+	DNSRecordTypeNS DNSRecordType = "NS"
 
-	// DNSRecordTypeCname represents DNS CNAME record type.
-	DNSRecordTypeCname DNSRecordType = "CNAME"
+	// DNSRecordTypeCNAME represents DNS CNAME record type.
+	DNSRecordTypeCNAME DNSRecordType = "CNAME"
 
-	// DNSRecordTypeMx represents DNS MX record type.
-	DNSRecordTypeMx DNSRecordType = "MX"
+	// DNSRecordTypeMX represents DNS MX record type.
+	DNSRecordTypeMX DNSRecordType = "MX"
 
-	// DNSRecordTypeNaptr represents DNS NAPTR record type.
-	DNSRecordTypeNaptr DNSRecordType = "NAPTR"
+	// DNSRecordTypeNAPTR represents DNS NAPTR record type.
+	DNSRecordTypeNAPTR DNSRecordType = "NAPTR"
 
-	// DNSRecordTypePtr represents DNS PTR record type.
-	DNSRecordTypePtr DNSRecordType = "PTR"
+	// DNSRecordTypePTR represents DNS PTR record type.
+	DNSRecordTypePTR DNSRecordType = "PTR"
 
-	// DNSRecordTypeSrv represents DNS SRV record type.
-	DNSRecordTypeSrv DNSRecordType = "SRV"
+	// DNSRecordTypeSRV represents DNS SRV record type.
+	DNSRecordTypeSRV DNSRecordType = "SRV"
 
-	// DNSRecordTypeSpf represents DNS SPF record type.
-	DNSRecordTypeSpf DNSRecordType = "SPF"
+	// DNSRecordTypeSPF represents DNS SPF record type.
+	DNSRecordTypeSPF DNSRecordType = "SPF"
 
-	// DNSRecordTypeAaaa represents DNS AAAA record type.
-	DNSRecordTypeAaaa DNSRecordType = "AAAA"
+	// DNSRecordTypeAAAA represents DNS AAAA record type.
+	DNSRecordTypeAAAA DNSRecordType = "AAAA"
 
-	// DNSRecordTypeCaa represents DNS CAA record type.
-	DNSRecordTypeCaa DNSRecordType = "CAA"
+	// DNSRecordTypeCAA represents DNS CAA record type.
+	DNSRecordTypeCAA DNSRecordType = "CAA"
 )
 
 // ChangeAction defines the valid actions that can be performed on a ResourceRecordSet.
@@ -63,7 +63,7 @@ const (
 // +kubebuilder:object:root=true
 
 // ResourceRecordSet is a managed resource that represents an AWS Route53 Resource Record.
-// +kubebuilder:printcolumn:name="TYPE",type="string",JSONPath=".status.atProvider.Type"
+// +kubebuilder:printcolumn:name="TYPE",type="string",JSONPath=".spec.forProvider.type"
 // +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="SYNCED",type="string",JSONPath=".status.conditions[?(@.type=='Synced')].status"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
@@ -86,7 +86,6 @@ type ResourceRecordSetSpec struct {
 // ResourceRecordSetStatus represents the observed state of a ResourceRecordSet.
 type ResourceRecordSetStatus struct {
 	runtimev1alpha1.ResourceStatus `json:",inline"`
-	AtProvider                     ResourceRecordSetObservation `json:"atProvider"`
 }
 
 // ResourceRecord holds the DNS value to be used for the record.
@@ -100,41 +99,31 @@ type ResourceRecord struct {
 // ResourceRecordSetParameters define the desired state of an AWS Route53 Resource Record.
 type ResourceRecordSetParameters struct {
 	// Name of the record that you want to create, update, or delete.
+	// +kubebuilder:validation:Required
 	Name *string `json:"name"`
 
 	// Type represents the DNS record type
+	// +kubebuilder:validation:Required
 	Type *string `json:"type"`
 
 	// The resource record cache time to live (TTL), in seconds.
+	// +optional
 	TTL *int64 `json:"ttl,omitempty"`
 
 	// ResourceRecord holds the information about the resource records to act upon.
+	// +kubebuilder:validation:Required
 	Records []string `json:"records"`
 
 	// ZoneID of the HostedZone in which you want to CREATE, CHANGE, or DELETE the Resource Record.
 	ZoneID *string `json:"zoneId,omitempty"`
 
-	// ZoneIDRef references a VPC to and retrieves its vpcId
+	// ZoneIDRef references a Zone to retrieves its ZoneId
 	// +optional
 	ZoneIDRef *runtimev1alpha1.Reference `json:"zoneIdRef,omitempty"`
 
-	// ZoneIDSelector selects a reference to a Zone to and retrieves its ZoneID
+	// ZoneIDSelector selects a reference to a Zone to retrieves its ZoneID
 	// +optional
 	ZoneIDSelector *runtimev1alpha1.Selector `json:"zoneIdSelector,omitempty"`
-}
-
-// ResourceRecordSetObservation keeps the state for the external resource.
-type ResourceRecordSetObservation struct {
-	// Name of the record that you want to create, update, or delete.
-	Name *string `json:"Name"`
-
-	Type *string `json:"Type"`
-
-	// The resource record cache time to live (TTL), in seconds.
-	TTL *int64 `json:"TTL"`
-
-	// ResourceRecord holds the information about the resource records to act upon.
-	ResourceRecords []*ResourceRecord `json:"ResourceRecords"`
 }
 
 // +kubebuilder:object:root=true

@@ -11,6 +11,7 @@ require (
 	github.com/ghodss/yaml v1.0.0
 	github.com/go-ini/ini v1.46.0
 	github.com/google/go-cmp v0.3.1
+	github.com/google/uuid v1.1.1
 	github.com/gopherjs/gopherjs v0.0.0-20180825215210-0210a2f0f73c // indirect
 	github.com/jtolds/gls v4.2.1+incompatible // indirect
 	github.com/mitchellh/copystructure v1.0.0

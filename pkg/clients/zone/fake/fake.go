@@ -28,14 +28,14 @@ var _ clientset.Client = (*MockZoneClient)(nil)
 
 // MockZoneClient is a type that implements all the methods for zone Client interface
 type MockZoneClient struct {
-	MockGetZoneRequest    func(id *string) route53.GetHostedZoneRequest
+	MockGetZoneRequest    func(id string) route53.GetHostedZoneRequest
 	MockCreateZoneRequest func(cr *v1alpha3.Zone) route53.CreateHostedZoneRequest
 	MockUpdateZoneRequest func(id, comment *string) route53.UpdateHostedZoneCommentRequest
 	MockDeleteZoneRequest func(id *string) route53.DeleteHostedZoneRequest
 }
 
 // GetZoneRequest mocks GetZoneRequest method
-func (m *MockZoneClient) GetZoneRequest(id *string) route53.GetHostedZoneRequest {
+func (m *MockZoneClient) GetZoneRequest(id string) route53.GetHostedZoneRequest {
 	return m.MockGetZoneRequest(id)
 }
 
