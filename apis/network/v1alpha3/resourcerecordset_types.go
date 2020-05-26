@@ -102,6 +102,18 @@ type ResourceRecordSetParameters struct {
 	// +kubebuilder:validation:Required
 	Name *string `json:"name"`
 
+	// Alias resource record sets only: Information about the AWS resource, such
+	// as a CloudFront distribution a Elastic Load Balancer or an Amazon S3 bucket
+	// that you want to route traffic to.
+	// +optional
+	Alias *bool `json:"alias,omitempty"`
+
+	// +optional
+	DNSName *string `json:"dnsName,omitempty"`
+
+	// +optional
+	EvaluateTargetHealth *bool `json:"evaluateHealthTarget,omitempty"`
+
 	// Type represents the DNS record type
 	// +kubebuilder:validation:Required
 	Type *string `json:"type"`
@@ -111,10 +123,11 @@ type ResourceRecordSetParameters struct {
 	TTL *int64 `json:"ttl,omitempty"`
 
 	// ResourceRecord holds the information about the resource records to act upon.
-	// +kubebuilder:validation:Required
-	Records []string `json:"records"`
+	// +optional
+	Records []string `json:"records,omitempty"`
 
 	// ZoneID of the HostedZone in which you want to CREATE, CHANGE, or DELETE the Resource Record.
+	// +kubebuilder:validation:Required
 	ZoneID *string `json:"zoneId,omitempty"`
 
 	// ZoneIDRef references a Zone to retrieves its ZoneId

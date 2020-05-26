@@ -33,6 +33,10 @@ import (
 const (
 	//RRSetNotFound is the error code that is returned if RRSet is present
 	RRSetNotFound = "InvalidRRSetName.NotFound"
+	// globalAccName is the Global Accelerator DNS name
+	globalAccName = "a012345abc.awsglobalaccelerator.com"
+	// globalAccID is the Hosted Zone ID of the Global Accelerator DNS
+	globalAccID = "Z2BJ6XQ5FK7U4H"
 )
 
 // Client defines ResourceRecordSet operations
@@ -55,20 +59,42 @@ func NewClient(config *aws.Config) Client {
 
 // GenerateChangeResourceRecordSetsInput prepares input for a ChangeResourceRecordSetsInput
 func GenerateChangeResourceRecordSetsInput(p *v1alpha3.ResourceRecordSetParameters, action route53.ChangeAction) *route53.ChangeResourceRecordSetsInput {
-	var ttl *int64
-	if p.TTL == nil {
-		num := int64(300)
-		ttl = &num
-	} else {
-		ttl = p.TTL
+	var rrSet = &route53.ResourceRecordSet{
+		Name: p.Name,
+		Type: route53.RRType(aws.StringValue(p.Type)),
 	}
 
-	resourceRecords := make([]route53.ResourceRecord, 0, len(p.Records))
-	for _, r := range p.Records {
-		record := r
-		resourceRecords = append(resourceRecords, route53.ResourceRecord{
-			Value: &record,
-		})
+	if p.TTL == nil {
+		p.TTL = aws.Int64(300)
+	}
+
+	rrSet.TTL = p.TTL
+
+	if aws.BoolValue(p.Alias) {
+		if aws.StringValue(p.DNSName) == globalAccName {
+			p.ZoneID = aws.String(globalAccID)
+		}
+
+		if !aws.BoolValue(p.EvaluateTargetHealth) {
+			p.EvaluateTargetHealth = aws.Bool(false)
+		}
+
+		id := strings.TrimPrefix(aws.StringValue(p.ZoneID), "/hostedzone/")
+
+		rrSet.AliasTarget = &route53.AliasTarget{
+			DNSName:              p.DNSName,
+			EvaluateTargetHealth: p.EvaluateTargetHealth,
+			HostedZoneId:         &id,
+		}
+	} else {
+		resourceRecords := make([]route53.ResourceRecord, 0, len(p.Records))
+		for _, r := range p.Records {
+			record := r
+			resourceRecords = append(resourceRecords, route53.ResourceRecord{
+				Value: &record,
+			})
+		}
+		rrSet.ResourceRecords = resourceRecords
 	}
 
 	return &route53.ChangeResourceRecordSetsInput{
@@ -76,13 +102,8 @@ func GenerateChangeResourceRecordSetsInput(p *v1alpha3.ResourceRecordSetParamete
 		ChangeBatch: &route53.ChangeBatch{
 			Changes: []route53.Change{
 				{
-					Action: action,
-					ResourceRecordSet: &route53.ResourceRecordSet{
-						Name:            p.Name,
-						Type:            route53.RRType(aws.StringValue(p.Type)),
-						TTL:             ttl,
-						ResourceRecords: resourceRecords,
-					},
+					Action:            action,
+					ResourceRecordSet: rrSet,
 				},
 			},
 		},

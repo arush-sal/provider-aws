@@ -444,6 +444,21 @@ func (in *ResourceRecordSetParameters) DeepCopyInto(out *ResourceRecordSetParame
 		*out = new(string)
 		**out = **in
 	}
+	if in.Alias != nil {
+		in, out := &in.Alias, &out.Alias
+		*out = new(bool)
+		**out = **in
+	}
+	if in.DNSName != nil {
+		in, out := &in.DNSName, &out.DNSName
+		*out = new(string)
+		**out = **in
+	}
+	if in.EvaluateTargetHealth != nil {
+		in, out := &in.EvaluateTargetHealth, &out.EvaluateTargetHealth
+		*out = new(bool)
+		**out = **in
+	}
 	if in.Type != nil {
 		in, out := &in.Type, &out.Type
 		*out = new(string)
